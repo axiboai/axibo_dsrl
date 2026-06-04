@@ -70,6 +70,27 @@ def get_pi05_input(obs, instruction):
     }
 
 
+def make_horizon_noise(noise_step, action_horizon, action_dim=32):
+    """Tile one SAC noise step to ``(1, action_horizon, action_dim)`` for pi0.5."""
+    noise_step = np.asarray(noise_step, dtype=np.float32).reshape(-1, action_dim)
+    if noise_step.shape[0] != 1:
+        raise ValueError(f"expected one noise step (1, {action_dim}), got {noise_step.shape}")
+    tail = np.repeat(noise_step[-1:, :], action_horizon - 1, axis=0)
+    return np.concatenate([noise_step, tail], axis=0)[None]
+
+
+def infer_pi05_actions(agent_dp, request_data, *, noise=None):
+    """Call the pi0.5 policy server exactly like ``smoke_bc_piper.py``."""
+    if noise is None:
+        actions = agent_dp.infer(request_data)["actions"]
+    else:
+        actions = agent_dp.infer(request_data, noise=np.asarray(noise, dtype=np.float32))["actions"]
+    actions = np.asarray(actions)
+    if actions.ndim == 3:
+        actions = actions[0]
+    return actions
+
+
 def process_images(variant, obs):
     """Concatenate the 3 cameras into the SAC pixel encoder input.
 
@@ -235,27 +256,26 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
                 }
 
                 if i == 0:
-                    # Initial data collection: sample the base policy with
-                    # standard Gaussian noise to bootstrap the buffer.
-                    noise = jax.random.normal(key, (1, *agent.action_chunk_shape))
-                    noise_repeat = jax.numpy.repeat(
-                        noise[:, -1:, :], action_horizon - noise.shape[1], axis=1)
-                    noise = jax.numpy.concatenate([noise, noise_repeat], axis=1)
-                    actions_noise = noise[0, :agent.action_chunk_shape[0], :]
+                    # Bootstrap episode: pure BC inference (same as smoke_bc_piper
+                    # without --gaussian-noise).  SAC buffer gets random noise labels.
+                    action = infer_pi05_actions(agent_dp, request_data)
+                    actions_noise = np.asarray(
+                        jax.random.normal(key, agent.action_chunk_shape), dtype=np.float32)
                 else:
-                    # SAC predicts the diffusion noise; tile across the horizon.
-                    actions_noise = agent.sample_actions(obs_dict)
-                    actions_noise = np.reshape(actions_noise, agent.action_chunk_shape)
-                    noise = np.repeat(actions_noise[-1:, :],
-                                      action_horizon - actions_noise.shape[0], axis=0)
-                    noise = jax.numpy.concatenate([actions_noise, noise], axis=0)[None]
+                    # SAC steers diffusion noise; tile one step across the horizon.
+                    actions_noise = np.reshape(
+                        agent.sample_actions(obs_dict), agent.action_chunk_shape)
+                    noise = make_horizon_noise(actions_noise, action_horizon)
+                    action = infer_pi05_actions(agent_dp, request_data, noise=noise)
+
+                if t == 0:
+                    print(f"action chunk shape from server: {action.shape}")
 
                 action_list.append(actions_noise)
                 obs_list.append(obs_dict)
-                action = agent_dp.infer(request_data, noise=np.asarray(noise))["actions"]
 
             # actions are (action_horizon, 14) in robot units (rad + gripper m).
-            action_t = action[t % query_frequency]
+            action_t = np.asarray(action[t % query_frequency], dtype=np.float32).reshape(-1)
             try:
                 env.step(action_t)
             except Exception:

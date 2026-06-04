@@ -33,7 +33,11 @@ import numpy as np
 
 from examples.openpi_ws_client import PiperWebsocketClientPolicy
 from examples.piper_env import PiperEnv
-from examples.train_utils_piper import _extract_observation, get_pi05_input
+from examples.train_utils_piper import (
+    _extract_observation,
+    get_pi05_input,
+    infer_pi05_actions,
+)
 
 
 def rollout(agent_dp, env, args, action_horizon, action_dim=32):
@@ -48,18 +52,14 @@ def rollout(agent_dp, env, args, action_horizon, action_dim=32):
 
         if t % args.query_freq == 0:
             if args.gaussian_noise:
-                # Exercise the DSRL noise protocol: send standard Gaussian noise
-                # (this is what the SAC agent steers once training begins).
                 noise = np.random.randn(1, action_horizon, action_dim).astype(np.float32)
-                action = agent_dp.infer(request_data, noise=noise)["actions"]
+                action = infer_pi05_actions(agent_dp, request_data, noise=noise)
             else:
-                # Pure BC: let the server sample its own noise.
-                action = agent_dp.infer(request_data)["actions"]
-            action = np.asarray(action)
+                action = infer_pi05_actions(agent_dp, request_data)
             if t == 0:
                 print(f"action chunk shape from server: {action.shape}")
 
-        action_t = action[t % args.query_freq]
+        action_t = np.asarray(action[t % args.query_freq], dtype=np.float32).reshape(-1)
         env.step(action_t)
 
         now = time.time()
