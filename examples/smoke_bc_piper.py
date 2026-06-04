@@ -19,8 +19,15 @@ Run on the robot PC (server must already be up):
 """
 
 import os
+import sys
 import time
 import argparse
+from pathlib import Path
+
+# Repo root on sys.path (setup.py only installs jaxrl2, not examples/).
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
 
