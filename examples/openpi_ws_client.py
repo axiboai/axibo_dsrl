@@ -6,8 +6,8 @@ The nakamotoo openpi-client wraps requests as ``{method, obs}``; piperx-openpi's
 
 This client sends a **flat** observation dict (state / images / prompt).  For DSRL
 noise steering, ``noise`` is embedded in the payload; the policy server must pop it
-before calling ``policy.infer(obs, noise=noise)`` — see the server patch in
-``examples/scripts/run_piper.sh`` comments.
+before calling ``policy.infer(obs, noise=noise)`` — apply
+``examples/scripts/patch_openpi_websocket_noise.py`` on your piperx-openpi checkout.
 """
 
 from __future__ import annotations
