@@ -22,7 +22,11 @@
 proj_name=DSRL_pi05_PiperX
 device_id=0
 
-export EXP=./logs/$proj_name
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+
+export EXP="${REPO_ROOT}/logs/$proj_name"
 export CUDA_VISIBLE_DEVICES=$device_id
 
 # Share the GPU with the local pi0.5 server: allocate on demand instead of
