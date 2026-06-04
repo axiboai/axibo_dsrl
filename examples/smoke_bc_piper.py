@@ -1,0 +1,98 @@
+#! /usr/bin/env python
+"""BC-only smoke test for the PiperX DSRL integration (no SAC, no replay buffer).
+
+Validates the full client/server/robot path before launching online RL:
+
+    * PiperEnv hooks (reset / get_observation / step) talk to piperx_lerobot_setup
+    * the policy server returns 14-D actions in robot units
+    * (optionally) the noise-steering protocol works end-to-end
+
+It simply rolls out the frozen pi0.5 policy. With --gaussian-noise it exercises
+the exact websocket noise path DSRL uses (server must be the patched
+piperx-openpi); without it, the server samples its own noise (pure BC).
+
+Run on the robot PC (server must already be up):
+
+    export remote_host=<gpu-ip>
+    export remote_port=8000
+    python3 examples/smoke_bc_piper.py --episodes 1 --max_timesteps 200
+"""
+
+import os
+import time
+import argparse
+
+import numpy as np
+
+from openpi_client import websocket_client_policy as _websocket_client_policy
+from examples.piper_env import PiperEnv
+from examples.train_utils_piper import _extract_observation, get_pi05_input
+
+
+def rollout(agent_dp, env, args, action_horizon, action_dim=32):
+    env.reset()
+    step_time = 1.0 / args.control_hz
+    last_step_time = time.time()
+    action = None
+
+    for t in range(args.max_timesteps):
+        curr_obs = _extract_observation(env.get_observation())
+        request_data = get_pi05_input(curr_obs, args.instruction)
+
+        if t % args.query_freq == 0:
+            if args.gaussian_noise:
+                # Exercise the DSRL noise protocol: send standard Gaussian noise
+                # (this is what the SAC agent steers once training begins).
+                noise = np.random.randn(1, action_horizon, action_dim).astype(np.float32)
+                action = agent_dp.infer(request_data, noise=noise)["actions"]
+            else:
+                # Pure BC: let the server sample its own noise.
+                action = agent_dp.infer(request_data)["actions"]
+            action = np.asarray(action)
+            if t == 0:
+                print(f"action chunk shape from server: {action.shape}")
+
+        action_t = action[t % args.query_freq]
+        env.step(action_t)
+
+        now = time.time()
+        dt = now - last_step_time
+        if dt < step_time:
+            time.sleep(step_time - dt)
+            last_step_time = time.time()
+        else:
+            last_step_time = now
+
+    env.reset()
+    print("rollout complete")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--episodes', default=1, type=int)
+    parser.add_argument('--max_timesteps', default=200, type=int)
+    parser.add_argument('--query_freq', default=50, type=int)
+    parser.add_argument('--action_horizon', default=50, type=int)
+    parser.add_argument('--control_hz', default=30, type=int)
+    parser.add_argument('--instruction', default='pick towel from pile, fold and stack')
+    parser.add_argument('--gaussian-noise', action='store_true',
+                        help='send Gaussian noise via the DSRL protocol (tests the patched server)')
+    args = parser.parse_args()
+
+    agent_dp = _websocket_client_policy.WebsocketClientPolicy(
+        host=os.environ['remote_host'],
+        port=os.environ['remote_port'],
+    )
+    metadata = agent_dp.get_server_metadata()
+    print(f"server metadata: {metadata}")
+
+    reset_pose = metadata.get('reset_pose') if isinstance(metadata, dict) else None
+    env = PiperEnv(control_hz=args.control_hz, reset_pose=reset_pose)
+
+    for ep in range(args.episodes):
+        print(f"=== episode {ep} ===")
+        rollout(agent_dp, env, args, args.action_horizon)
+
+
+if __name__ == '__main__':
+    main()

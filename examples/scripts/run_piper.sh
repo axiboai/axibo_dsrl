@@ -1,0 +1,62 @@
+#!/bin/bash
+# DSRL online fine-tuning for the AgileX (PiperX) bimanual arms.
+#
+# Single-machine setup (policy server + SAC both on one 24 GB 4090):
+#
+#   1. Start the patched piperx-openpi policy server in a SEPARATE shell, with
+#      JAX preallocation OFF so it does not grab the whole GPU:
+#
+#        export XLA_PYTHON_CLIENT_PREALLOCATE=false
+#        # if OOM, hard-partition instead:
+#        #   export XLA_PYTHON_CLIENT_PREALLOCATE=true
+#        #   export XLA_PYTHON_CLIENT_MEM_FRACTION=0.55
+#        uv run scripts/serve_policy.py policy:checkpoint \
+#          --policy.config=pi05_piperx_flatten \
+#          --policy.dir=/path/to/pi05_flatten_raw/14999 \
+#          --default-prompt="pick towel from pile, fold and stack"
+#
+#      (The server must support the DSRL noise protocol -- see the websocket
+#       patch in the integration notes.)
+#   2. PiperEnv hooks in examples/piper_env.py are wired to piperx_lerobot_setup.
+
+proj_name=DSRL_pi05_PiperX
+device_id=0
+
+export EXP=./logs/$proj_name
+export CUDA_VISIBLE_DEVICES=$device_id
+
+# Share the GPU with the local pi0.5 server: allocate on demand instead of
+# preallocating 75%. If you still OOM, set PREALLOCATE=true and cap SAC with
+# XLA_PYTHON_CLIENT_MEM_FRACTION=0.35 (give the server ~0.55).
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+
+# pi0.5 policy server runs locally on this same machine.
+export remote_host="127.0.0.1"
+export remote_port="8000"
+
+# Horizon note: max_timesteps=6000 (~200 s @ 30 Hz) is just a SAFETY CEILING --
+# press 'q' to end an episode the moment the fold is done. Typical q-ended folds
+# are ~100 s (~60 SAC transitions @ query_freq=50). The Bellman backup uses
+# discount^query_freq per transition, so discount=0.9995 keeps the sparse
+# success signal propagating across the episode (0.99 would vanish).
+python3 examples/launch_train_piper.py \
+--algorithm pixel_sac \
+--env piperx \
+--prefix dsrl_pi05_piperx \
+--wandb_project ${proj_name} \
+--batch_size 256 \
+--discount 0.9995 \
+--seed 0 \
+--max_steps 150000 \
+--eval_interval 2000 \
+--log_interval 100 \
+--multi_grad_step 30 \
+--resize_image 128 \
+--action_magnitude 2.5 \
+--query_freq 50 \
+--action_horizon 50 \
+--control_hz 30 \
+--max_timesteps 6000 \
+--hidden_dims 1024 \
+--num_qs 2 \
+--instruction "pick towel from pile, fold and stack"
