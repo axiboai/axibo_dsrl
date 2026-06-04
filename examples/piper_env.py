@@ -6,10 +6,16 @@ DSRL only needs three things from the environment:
     get_observation()   -> return the current cameras + proprio
     step(action)        -> command a single 14-D joint+gripper target
 
-This file deliberately does NOT talk to the CAN bus directly. Instead it
-delegates to your existing ``piperx_lerobot_setup`` stack (the same code you
-already use for teleop / BC inference). Fill in the four ``_robot_*`` hooks
-below and the rest of the DSRL pipeline will work unchanged.
+Wire-up options (pick one):
+
+1. **Factory (recommended)** — point at your existing piperx_lerobot_setup code::
+
+       export PIPER_ENV_FACTORY=piperx_lerobot_setup.env:make_piper_env
+
+   ``make_piper_env(reset_pose=None)`` must return an object with ``reset()``,
+   ``get_observation()``, and ``step(action)`` (see Backend protocol below).
+
+2. **Inline hooks** — edit the four ``_robot_*`` methods at the bottom of this file.
 
 Action / state layout (must match the LeRobot dataset + openpi config):
 
@@ -17,19 +23,16 @@ Action / state layout (must match the LeRobot dataset + openpi config):
     index  6      left gripper (meters, ~0 closed .. ~0.07 open)
     index  7..12  right arm joints (rad)
     index  13     right gripper (meters)
-
-The policy server (piperx-openpi, config ``pi05_piperx_flatten``) returns
-actions already in these robot units via ``PiperXOutputs``, so ``step`` should
-forward them to the follower with no extra scaling or gripper binarization.
 """
 
+import importlib
+import os
 import time
+from typing import Any, Callable, Optional
 
 import numpy as np
 
 
-# Camera names expected by the pi0.5 PiperX policy (NOT the LeRobot
-# ``observation.images.*`` keys -- those are only used during training).
 CAM_FRONT = "cam_front"
 CAM_LEFT_WRIST = "cam_left_wrist"
 CAM_RIGHT_WRIST = "cam_right_wrist"
@@ -38,24 +41,40 @@ CAMERA_NAMES = (CAM_FRONT, CAM_LEFT_WRIST, CAM_RIGHT_WRIST)
 STATE_DIM = 14
 
 
-class PiperEnv:
-    """Thin wrapper around piperx_lerobot_setup for DSRL online rollouts.
+def _load_callable(spec: str) -> Callable[..., Any]:
+    """Import ``module.path:attr`` (function or class)."""
+    module_name, attr_name = spec.rsplit(":", 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, attr_name)
 
-    Parameters
-    ----------
-    control_hz:
-        Loop rate used by the DSRL collect loop (dataset was recorded at 30 Hz).
-    reset_pose:
-        Optional per-arm reset joints. Defaults to the value stored in the
-        training config's ``policy_metadata['reset_pose']``.
-    robot:
-        Optional pre-constructed robot handle from piperx_lerobot_setup. If
-        omitted, ``_robot_connect`` is called lazily on first use.
-    """
+
+def _try_load_backend(reset_pose, robot) -> Optional[Any]:
+    """Load a full env backend from ``PIPER_ENV_FACTORY`` if set."""
+    spec = os.environ.get("PIPER_ENV_FACTORY")
+    if not spec:
+        return None
+    factory = _load_callable(spec)
+    if robot is not None:
+        return robot
+    try:
+        return factory(reset_pose=reset_pose)
+    except TypeError:
+        return factory()
+
+
+class PiperEnv:
+    """Thin wrapper around piperx_lerobot_setup for DSRL online rollouts."""
 
     def __init__(self, control_hz=30, reset_pose=None, robot=None):
         self.control_hz = control_hz
         self.reset_pose = reset_pose
+
+        self._backend = _try_load_backend(reset_pose, robot)
+        if self._backend is not None:
+            self._use_backend = True
+            return
+
+        self._use_backend = False
         self._robot = robot
         if self._robot is None:
             self._robot = self._robot_connect()
@@ -64,21 +83,19 @@ class PiperEnv:
     # DSRL-facing API
     # ------------------------------------------------------------------ #
     def reset(self):
-        """Return the arms to the start configuration before each episode."""
+        if self._use_backend:
+            return self._backend.reset()
+
         self._robot_go_to_reset()
-        # Small settle time so the first observation is not mid-motion.
         time.sleep(0.5)
         return self.get_observation()
 
     def get_observation(self):
-        """Return a dict consumed by ``train_utils_piper._extract_observation``.
+        if self._use_backend:
+            obs = self._backend.get_observation()
+            _validate_observation(obs)
+            return obs
 
-        Returns
-        -------
-        dict with keys:
-            "images": {cam_name: HxWx3 uint8 RGB array} for all CAMERA_NAMES
-            "state":  (14,) float32 joint+gripper vector in robot units
-        """
         images = self._robot_read_cameras()
         for name in CAMERA_NAMES:
             if name not in images:
@@ -90,45 +107,42 @@ class PiperEnv:
         return {"images": images, "state": state}
 
     def step(self, action):
-        """Command one 14-D joint+gripper target (already in robot units)."""
         action = np.asarray(action, dtype=np.float32).reshape(STATE_DIM)
+        if self._use_backend:
+            self._backend.step(action)
+            return
         self._robot_send_action(action)
 
     # ------------------------------------------------------------------ #
-    # Hooks to implement against piperx_lerobot_setup  (the only TODOs)
+    # Hooks (only used when PIPER_ENV_FACTORY is not set)
     # ------------------------------------------------------------------ #
     def _robot_connect(self):
-        """Construct and return your robot handle.
-
-        Example (adapt to your stack):
-            from piperx_lerobot_setup import BimanualPiper
-            return BimanualPiper(left_can="can_left", right_can="can_right",
-                                 cameras=["front", "left_wrist", "right_wrist"])
-        """
         raise NotImplementedError(
-            "Wire PiperEnv._robot_connect to your piperx_lerobot_setup robot handle."
+            "Set PIPER_ENV_FACTORY=your.module:make_piper_env (recommended), or "
+            "implement PiperEnv._robot_connect in examples/piper_env.py.\n"
+            "Example:\n"
+            "  export PIPER_ENV_FACTORY=piperx_lerobot_setup.env:make_piper_env"
         )
 
     def _robot_go_to_reset(self):
-        """Move both arms to ``self.reset_pose`` (blocking)."""
-        raise NotImplementedError(
-            "Wire PiperEnv._robot_go_to_reset to your follower reset routine."
-        )
+        raise NotImplementedError("Wire PiperEnv._robot_go_to_reset.")
 
     def _robot_read_cameras(self):
-        """Return {CAM_FRONT/CAM_LEFT_WRIST/CAM_RIGHT_WRIST: HxWx3 uint8 RGB}."""
-        raise NotImplementedError(
-            "Wire PiperEnv._robot_read_cameras to your RealSense/camera reads."
-        )
+        raise NotImplementedError("Wire PiperEnv._robot_read_cameras.")
 
     def _robot_read_state(self):
-        """Return the 14-D [L_joints6, L_grip, R_joints6, R_grip] vector."""
-        raise NotImplementedError(
-            "Wire PiperEnv._robot_read_state to your joint/gripper feedback."
-        )
+        raise NotImplementedError("Wire PiperEnv._robot_read_state.")
 
     def _robot_send_action(self, action):
-        """Send 14-D joint+gripper targets to the followers (e.g. port 3336)."""
-        raise NotImplementedError(
-            "Wire PiperEnv._robot_send_action to your follower_sink command path."
-        )
+        raise NotImplementedError("Wire PiperEnv._robot_send_action.")
+
+
+def _validate_observation(obs: dict) -> None:
+    if "images" not in obs or "state" not in obs:
+        raise KeyError(f"Backend get_observation() must return {{images, state}}, got {obs.keys()}")
+    for name in CAMERA_NAMES:
+        if name not in obs["images"]:
+            raise KeyError(f"Camera '{name}' missing; got {list(obs['images'])}")
+    state = np.asarray(obs["state"])
+    if state.shape != (STATE_DIM,):
+        raise ValueError(f"state must be (14,), got {state.shape}")
