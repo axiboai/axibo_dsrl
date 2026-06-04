@@ -31,3 +31,6 @@ gym-aloha==0.1.1
 bddl==3.5.0
 tf_keras==2.19.0
 moviepy==1.0.3
+typing_extensions>=4.0.0
+websockets>=11.0
+msgpack>=1.0.5
