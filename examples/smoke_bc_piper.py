@@ -31,7 +31,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import numpy as np
 
-from openpi_client import websocket_client_policy as _websocket_client_policy
+from examples.openpi_ws_client import PiperWebsocketClientPolicy
 from examples.piper_env import PiperEnv
 from examples.train_utils_piper import _extract_observation, get_pi05_input
 
@@ -86,9 +86,9 @@ def main():
                         help='send Gaussian noise via the DSRL protocol (tests the patched server)')
     args = parser.parse_args()
 
-    agent_dp = _websocket_client_policy.WebsocketClientPolicy(
+    agent_dp = PiperWebsocketClientPolicy(
         host=os.environ['remote_host'],
-        port=os.environ['remote_port'],
+        port=int(os.environ['remote_port']),
     )
     metadata = agent_dp.get_server_metadata()
     print(f"server metadata: {metadata}")

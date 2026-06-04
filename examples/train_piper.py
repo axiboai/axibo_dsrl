@@ -24,8 +24,8 @@ from jaxrl2.utils.general_utils import add_batch_dim
 from jaxrl2.data import ReplayBuffer
 from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
 from examples.train_utils_piper import trajwise_alternating_training_loop
+from examples.openpi_ws_client import PiperWebsocketClientPolicy
 from examples.piper_env import PiperEnv
-from openpi_client import websocket_client_policy as _websocket_client_policy
 
 home_dir = os.environ['HOME']
 compilation_cache.initialize_cache(os.path.join(home_dir, 'jax_compilation_cache'))
@@ -99,9 +99,9 @@ def main(variant):
                                group_name=group_name)
 
     # Remote pi0.5 policy server (piperx-openpi, patched for noise steering).
-    agent_dp = _websocket_client_policy.WebsocketClientPolicy(
+    agent_dp = PiperWebsocketClientPolicy(
         host=os.environ['remote_host'],
-        port=os.environ['remote_port'],
+        port=int(os.environ['remote_port']),
     )
     server_metadata = agent_dp.get_server_metadata()
     logging.info(f"Server metadata: {server_metadata}")

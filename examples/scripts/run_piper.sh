@@ -15,8 +15,10 @@
 #          --policy.dir=/path/to/pi05_flatten_raw/14999 \
 #          --default-prompt="pick towel from pile, fold and stack"
 #
-#      (The server must support the DSRL noise protocol -- see the websocket
-#       patch in the integration notes.)
+#      (Patch websocket_policy_server.py so infer pops noise from the flat obs:
+#        obs = msgpack_numpy.unpackb(await websocket.recv())
+#        noise = obs.pop("noise", None) if isinstance(obs, dict) else None
+#        action = self._policy.infer(obs, noise=noise)
 #   2. ZMQ stack running (same as openpi_inference.py pre-flight):
 #        follower_sink, RealSense pubs, teleop on 3335 (--no-command).
 #        Do NOT run openpi_inference.py while DSRL is running.
