@@ -17,7 +17,9 @@
 #
 #      (The server must support the DSRL noise protocol -- see the websocket
 #       patch in the integration notes.)
-#   2. PiperEnv hooks in examples/piper_env.py are wired to piperx_lerobot_setup.
+#   2. ZMQ stack running (same as openpi_inference.py pre-flight):
+#        follower_sink, RealSense pubs, teleop on 3335 (--no-command).
+#        Do NOT run openpi_inference.py while DSRL is running.
 
 proj_name=DSRL_pi05_PiperX
 device_id=0
@@ -25,6 +27,10 @@ device_id=0
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+
+# Robot I/O via piperx_lerobot_setup ZMQ (same ports as openpi_inference.py).
+export PIPER_LEROBOT_SETUP="${PIPER_LEROBOT_SETUP:-$HOME/piperx_lerobot_setup/scripts}"
+export PIPER_ENV_FACTORY="${PIPER_ENV_FACTORY:-examples.piper_env_zmq:make_piper_env}"
 
 export EXP="${REPO_ROOT}/logs/$proj_name"
 export CUDA_VISIBLE_DEVICES=$device_id

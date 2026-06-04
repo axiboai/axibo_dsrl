@@ -34,3 +34,4 @@ moviepy==1.0.3
 typing_extensions>=4.0.0
 websockets>=11.0
 msgpack>=1.0.5
+pyzmq>=25.0.0
