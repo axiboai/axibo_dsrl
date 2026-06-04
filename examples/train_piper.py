@@ -130,6 +130,10 @@ def main(variant):
 
     agent = PixelSACLearner(variant.seed, sample_obs, sample_action, **kwargs)
 
+    print('Warming up SAC (JAX compile)...', flush=True)
+    agent.sample_actions(sample_obs)
+    print('SAC warmup done.', flush=True)
+
     if variant.restore_path != '':
         logging.info('restoring from %s', variant.restore_path)
         agent.restore_checkpoint(variant.restore_path)

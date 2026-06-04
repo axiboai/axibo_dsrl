@@ -105,6 +105,33 @@ def process_images(variant, obs):
 
 
 # ---------------------------------------------------------------------------#
+# Rollout / training helpers
+# ---------------------------------------------------------------------------#
+def _wait_for_episode_ready(episode_num: int) -> None:
+    """Pause between episodes so the operator can reset the scene."""
+    print(
+        f"\n>>> Press ENTER (or 'c') when the robot/scene is ready for episode {episode_num}...",
+        flush=True,
+    )
+    try:
+        line = input()
+    except EOFError:
+        return
+    if line.strip().lower() not in ("", "c"):
+        print("(continuing anyway)", flush=True)
+
+
+def _write_episode_video(variant, image_list, traj_id, control_hz) -> None:
+    if not image_list:
+        return
+    print(f"Writing episode video for traj {traj_id}...", flush=True)
+    video_path = os.path.join(variant.outputdir, f'video_front_{traj_id}.mp4')
+    video = np.stack(image_list)
+    ImageSequenceClip(list(video), fps=control_hz).write_videofile(
+        video_path, codec="libx264", logger=None)
+
+
+# ---------------------------------------------------------------------------#
 # Online training loop
 # ---------------------------------------------------------------------------#
 def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer,
@@ -123,6 +150,11 @@ def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_rep
 
     with tqdm(total=variant.max_steps, initial=0) as pbar:
         while i <= variant.max_steps:
+            if total_num_traj > 0:
+                _wait_for_episode_ready(total_num_traj + 1)
+
+            mode = "BC bootstrap" if i == 0 else "SAC steered"
+            print(f"\n=== Starting episode {total_num_traj + 1} ({mode}) ===", flush=True)
             traj = collect_traj(variant, agent, env, i, agent_dp, wandb_logger,
                                 total_num_traj, robot_config)
             total_num_traj += 1
@@ -136,15 +168,21 @@ def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_rep
                 num_gradsteps = 5000
             else:
                 num_gradsteps = len(traj["rewards"]) * variant.multi_grad_step
-            print(f'num_gradsteps: {num_gradsteps}')
+            print(f'\n>>> Training SAC: {num_gradsteps} gradient steps '
+                  f'(GPU busy, arms idle — this is normal).', flush=True)
 
             if total_num_traj >= variant.num_initial_traj_collect:
-                for _ in range(num_gradsteps):
+                report_every = max(1, min(500, num_gradsteps // 10))
+                for grad_idx in range(num_gradsteps):
                     batch = next(replay_buffer_iterator)
                     update_info = agent.update(batch)
 
                     pbar.update()
                     i += 1
+
+                    if (grad_idx + 1) % report_every == 0 or grad_idx + 1 == num_gradsteps:
+                        print(f'    SAC training {grad_idx + 1}/{num_gradsteps} '
+                              f'(global step {i})', flush=True)
 
                     if i % variant.log_interval == 0:
                         update_info = {k: jax.device_get(v) for k, v in update_info.items()}
@@ -166,6 +204,10 @@ def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_rep
                     if variant.checkpoint_interval != -1:
                         if i % variant.checkpoint_interval == 0:
                             agent.save_checkpoint(variant.outputdir, i, variant.checkpoint_interval)
+
+            print(f'>>> SAC training done for episode {total_num_traj}.', flush=True)
+            _write_episode_video(
+                variant, traj.get('images', []), total_num_traj - 1, variant.control_hz)
 
 
 def add_online_data_to_buffer(variant, traj, online_replay_buffer):
@@ -263,6 +305,9 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
                         jax.random.normal(key, agent.action_chunk_shape), dtype=np.float32)
                 else:
                     # SAC steers diffusion noise; tile one step across the horizon.
+                    if t == 0:
+                        print("Querying SAC for steered noise (first query may compile)...",
+                              flush=True)
                     actions_noise = np.reshape(
                         agent.sample_actions(obs_dict), agent.action_chunk_shape)
                     noise = make_horizon_noise(actions_noise, action_horizon)
@@ -340,13 +385,7 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
             wandb_logger.log({'is_success': int(is_success)}, step=i)
             wandb_logger.log({'total_num_traj': traj_id}, step=i)
 
-        if len(image_list) > 0:
-            video_path = os.path.join(variant.outputdir, f'video_front_{traj_id}.mp4')
-            video = np.stack(image_list)
-            ImageSequenceClip(list(video), fps=variant.control_hz).write_videofile(
-                video_path, codec="libx264")
-
-        print("Episode Done! Reset the environment, then press 'c' to continue.")
+        print("Episode finished — moving to reset pose.", flush=True)
         try:
             env.reset()
         except Exception:
@@ -363,5 +402,6 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
         'masks': masks,
         'is_success': is_success,
         'env_steps': len(action_list),
+        'images': image_list,
     }
     return traj

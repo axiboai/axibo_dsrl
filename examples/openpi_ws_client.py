@@ -61,8 +61,14 @@ class PiperWebsocketClientPolicy:
         payload = dict(obs)
         if noise is not None:
             payload["noise"] = noise
-        self._ws.send(self._packer.pack(payload))
-        response = self._ws.recv()
+        try:
+            self._ws.send(self._packer.pack(payload))
+            response = self._ws.recv()
+        except Exception as exc:
+            logging.warning("Policy websocket error (%s); reconnecting...", exc)
+            self._ws, self._server_metadata = self._wait_for_server()
+            self._ws.send(self._packer.pack(payload))
+            response = self._ws.recv()
         if isinstance(response, str):
             raise RuntimeError(f"Error in inference server:\n{response}")
         return msgpack_numpy.unpackb(response)
