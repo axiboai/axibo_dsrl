@@ -6,11 +6,14 @@ format expected by the ``pi05_piperx_flatten`` policy server:
   * 3 cameras: cam_front, cam_left_wrist, cam_right_wrist (CHW uint8 for the
     policy; concatenated HWC for the SAC pixel encoder).
   * 14-D proprio state (no pi0 prefix embedding -- SAC state is raw qpos).
-  * noise padded to the model's action_horizon (50 for pi0.5) and 14-D actions
-    forwarded to the robot unchanged (no gripper binarization / no clipping).
+  * 14-D actions forwarded to the robot unchanged (no gripper binarization /
+    no clipping).
 
-The diffusion policy (pi0.5) is frozen; SAC is learned ONLINE in the 32-D
-flow-matching noise space, using sparse -1/0 rewards from manual success labels.
+The diffusion policy (pi0.5) is frozen; SAC is learned ONLINE in a 32-D
+flow-matching noise SHIFT space.  Each query draws fresh independent N(0, 1)
+noise of shape (action_horizon, 32) -- the same in-distribution noise the model
+was trained with -- and SAC adds a single broadcast 32-D shift on top.  Rewards
+are sparse -1/0 from manual success labels.
 """
 
 import os
@@ -70,15 +73,26 @@ def get_pi05_input(obs, instruction):
     }
 
 
-def make_horizon_noise(noise_step, action_horizon, action_dim=32, *, clip=None):
-    """Tile one SAC noise step to ``(1, action_horizon, action_dim)`` for pi0.5."""
-    noise_step = np.asarray(noise_step, dtype=np.float32).reshape(-1, action_dim)
-    if noise_step.shape[0] != 1:
-        raise ValueError(f"expected one noise step (1, {action_dim}), got {noise_step.shape}")
+def make_steered_noise(rng_key, shift, action_horizon, action_dim=32, *, clip=None):
+    """Steer pi0.5's flow noise with a per-chunk shift.
+
+    pi0.5 expects the initial flow-matching noise to be *independent* standard
+    normal per horizon step, shape ``(1, action_horizon, action_dim)``.  We draw
+    a fresh independent base ``N(0, 1)`` each query and add a single broadcast
+    ``shift`` (the SAC action) on top.  Bootstrap uses a random shift; SAC uses a
+    learned one.  This keeps the noise in-distribution (no tiling/constant-drift)
+    while the stored action (the shift) is exactly what was applied.
+
+    Returns ``(noise, shift)`` where ``noise`` is sent to the policy server and
+    ``shift`` (clipped) is stored in the replay buffer as the SAC action.
+    """
+    base = np.asarray(
+        jax.random.normal(rng_key, (1, action_horizon, action_dim)), dtype=np.float32)
+    shift = np.asarray(shift, dtype=np.float32).reshape(action_dim)
     if clip is not None:
-        noise_step = np.clip(noise_step, -clip, clip)
-    tail = np.repeat(noise_step[-1:, :], action_horizon - 1, axis=0)
-    return np.concatenate([noise_step, tail], axis=0)[None]
+        shift = np.clip(shift, -clip, clip)
+    noise = base + shift[None, None, :]
+    return noise, shift
 
 
 def infer_pi05_actions(agent_dp, request_data, *, noise=None):
@@ -303,22 +317,28 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
                 use_bc_infer = traj_id < variant.bc_rollout_episodes
 
                 if use_bc_infer:
-                    # Pure BC — same path as smoke_bc_piper (server samples noise).
-                    action = infer_pi05_actions(agent_dp, request_data)
-                    actions_noise = np.asarray(
-                        jax.random.normal(key, agent.action_chunk_shape), dtype=np.float32)
+                    # Bootstrap: random shift over independent base noise. Same
+                    # in-distribution path as SAC, so the stored shift is a valid
+                    # action label and behaviour stays close to base BC.
+                    rng, shift_key = jax.random.split(rng)
+                    shift = np.asarray(
+                        jax.random.normal(shift_key, agent.action_chunk_shape),
+                        dtype=np.float32)
                 else:
-                    # SAC steers diffusion noise; tile one step across the horizon.
+                    # SAC predicts the steering shift over independent base noise.
                     if t == 0:
                         print("Querying SAC for steered noise...", flush=True)
-                    actions_noise = np.reshape(
+                    shift = np.reshape(
                         agent.sample_actions(obs_dict), agent.action_chunk_shape)
-                    noise = make_horizon_noise(
-                        actions_noise, action_horizon, clip=variant.steer_noise_clip)
-                    if t == 0:
-                        print(f"  steered noise stats: min={noise.min():.2f} "
-                              f"max={noise.max():.2f} mean={noise.mean():.2f}", flush=True)
-                    action = infer_pi05_actions(agent_dp, request_data, noise=noise)
+
+                noise, shift_applied = make_steered_noise(
+                    key, shift, action_horizon, clip=variant.steer_noise_clip)
+                actions_noise = shift_applied.reshape(agent.action_chunk_shape)
+                if t == 0:
+                    print(f"  noise stats: min={noise.min():.2f} max={noise.max():.2f} "
+                          f"mean={noise.mean():.2f} | shift |max|={np.abs(actions_noise).max():.2f}",
+                          flush=True)
+                action = infer_pi05_actions(agent_dp, request_data, noise=noise)
 
                 if t == 0:
                     print(f"action chunk shape from server: {action.shape}")
