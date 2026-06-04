@@ -25,6 +25,10 @@ if __name__ == '__main__':
     parser.add_argument('--add_states', default=1, help='whether to add low-dim states to the observations', type=int)
     parser.add_argument('--wandb_project', default='dsrl_piperx', help='wandb project')
     parser.add_argument('--num_initial_traj_collect', default=1, help='number of trajectories to collect before starting online updates', type=int)
+    parser.add_argument('--bc_rollout_episodes', default=5,
+                        help='episodes of pure BC inference before SAC steers noise', type=int)
+    parser.add_argument('--steer_noise_clip', default=1.0,
+                        help='clip SAC noise to +/- this before sending to pi0.5 (flow-matching scale)', type=float)
     parser.add_argument('--algorithm', default='pixel_sac', help='type of algorithm')
     parser.add_argument('--prefix', default='', help='prefix to use for wandb')
     parser.add_argument('--suffix', default='', help='suffix to use for wandb')

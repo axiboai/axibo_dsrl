@@ -67,6 +67,8 @@ python3 examples/launch_train_piper.py \
 --action_horizon 50 \
 --control_hz 30 \
 --max_timesteps 6000 \
+--bc_rollout_episodes 5 \
+--steer_noise_clip 1.0 \
 --hidden_dims 1024 \
 --num_qs 2 \
 --instruction "pick towel from pile, fold and stack"

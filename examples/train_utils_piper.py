@@ -70,11 +70,13 @@ def get_pi05_input(obs, instruction):
     }
 
 
-def make_horizon_noise(noise_step, action_horizon, action_dim=32):
+def make_horizon_noise(noise_step, action_horizon, action_dim=32, *, clip=None):
     """Tile one SAC noise step to ``(1, action_horizon, action_dim)`` for pi0.5."""
     noise_step = np.asarray(noise_step, dtype=np.float32).reshape(-1, action_dim)
     if noise_step.shape[0] != 1:
         raise ValueError(f"expected one noise step (1, {action_dim}), got {noise_step.shape}")
+    if clip is not None:
+        noise_step = np.clip(noise_step, -clip, clip)
     tail = np.repeat(noise_step[-1:, :], action_horizon - 1, axis=0)
     return np.concatenate([noise_step, tail], axis=0)[None]
 
@@ -153,7 +155,8 @@ def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_rep
             if total_num_traj > 0:
                 _wait_for_episode_ready(total_num_traj + 1)
 
-            mode = "BC bootstrap" if i == 0 else "SAC steered"
+            mode = ("BC rollout" if total_num_traj < variant.bc_rollout_episodes
+                    else "SAC steered")
             print(f"\n=== Starting episode {total_num_traj + 1} ({mode}) ===", flush=True)
             traj = collect_traj(variant, agent, env, i, agent_dp, wandb_logger,
                                 total_num_traj, robot_config)
@@ -297,20 +300,24 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
                     'state': qpos[np.newaxis, ..., np.newaxis],
                 }
 
-                if i == 0:
-                    # Bootstrap episode: pure BC inference (same as smoke_bc_piper
-                    # without --gaussian-noise).  SAC buffer gets random noise labels.
+                use_bc_infer = traj_id < variant.bc_rollout_episodes
+
+                if use_bc_infer:
+                    # Pure BC — same path as smoke_bc_piper (server samples noise).
                     action = infer_pi05_actions(agent_dp, request_data)
                     actions_noise = np.asarray(
                         jax.random.normal(key, agent.action_chunk_shape), dtype=np.float32)
                 else:
                     # SAC steers diffusion noise; tile one step across the horizon.
                     if t == 0:
-                        print("Querying SAC for steered noise (first query may compile)...",
-                              flush=True)
+                        print("Querying SAC for steered noise...", flush=True)
                     actions_noise = np.reshape(
                         agent.sample_actions(obs_dict), agent.action_chunk_shape)
-                    noise = make_horizon_noise(actions_noise, action_horizon)
+                    noise = make_horizon_noise(
+                        actions_noise, action_horizon, clip=variant.steer_noise_clip)
+                    if t == 0:
+                        print(f"  steered noise stats: min={noise.min():.2f} "
+                              f"max={noise.max():.2f} mean={noise.mean():.2f}", flush=True)
                     action = infer_pi05_actions(agent_dp, request_data, noise=noise)
 
                 if t == 0:
