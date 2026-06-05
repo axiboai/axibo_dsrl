@@ -99,10 +99,13 @@ def make_target_msg(seq: int, action_14: np.ndarray) -> str:
 
 
 class PiperZmqEnv:
-    def __init__(self, reset_pose=None, *, wrist_only=False, front_from="left", warmup_timeout_s=5.0):
+    def __init__(self, reset_pose=None, *, wrist_only=False, front_from="left", warmup_timeout_s=5.0,
+                 control_hz=30, reset_settle_s=2.0):
         self.reset_pose = reset_pose
         self.wrist_only = wrist_only or os.environ.get("PIPER_WRIST_ONLY", "") == "1"
         self.front_from = os.environ.get("PIPER_FRONT_FROM", front_from)
+        self.control_hz = float(os.environ.get("PIPER_CONTROL_HZ", control_hz))
+        self.reset_settle_s = float(os.environ.get("PIPER_RESET_SETTLE_S", reset_settle_s))
         self._seq = 0
 
         ctx = zmq.Context.instance()
@@ -148,17 +151,34 @@ class PiperZmqEnv:
 
     def reset(self):
         if self.reset_pose is not None and len(self.reset_pose) >= 6:
+            home = np.asarray(self.reset_pose[:6], dtype=np.float32)
+
+            # Preserve current gripper openings (home pose is joints only).
+            grip_l, grip_r = 0.0, 0.0
             state = _get_teleop_state(self._latest)
             if state is not None:
-                action = np.zeros(14, dtype=np.float32)
                 try:
-                    fR = state["follower_right"]
-                    action[7:13] = np.asarray(fR["q"][:6], dtype=np.float32)
-                    action[13] = float(fR["gripper"])
+                    grip_l = float(state["follower_left"]["gripper"])
+                    grip_r = float(state["follower_right"]["gripper"])
                 except (KeyError, TypeError, IndexError):
                     pass
-                action[:6] = np.asarray(self.reset_pose[:6], dtype=np.float32)
+
+            # Drive BOTH arms to the home joints.
+            action = np.zeros(14, dtype=np.float32)
+            action[:6] = home
+            action[6] = grip_l
+            action[7:13] = home
+            action[13] = grip_r
+
+            # Command the home target repeatedly so both arms actually arrive
+            # (a single publish does not move the follower all the way home).
+            n_steps = max(1, int(self.reset_settle_s * self.control_hz))
+            dt = 1.0 / self.control_hz
+            print(f"[PiperZmqEnv] resetting both arms to home for {self.reset_settle_s:.1f}s...",
+                  flush=True)
+            for _ in range(n_steps):
                 self.step(action)
+                time.sleep(dt)
         time.sleep(0.5)
         return self.get_observation()
 
