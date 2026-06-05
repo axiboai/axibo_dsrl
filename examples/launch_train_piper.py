@@ -66,7 +66,14 @@ if __name__ == '__main__':
         encoder_norm='group',
         use_spatial_softmax=True,
         softmax_temperature=-1,
-        target_entropy=0.0,
+        # target_entropy must track the action scale: the policy acts in
+        # [-action_magnitude, +action_magnitude], so the max achievable entropy
+        # is ~action_dim*log(action_magnitude) lower as the range shrinks. The
+        # proven operating point was target=0 at action_magnitude=2.5. With
+        # action_magnitude=0.2 that shifts by action_dim*log(0.2/2.5) ~= -81,
+        # so we use -80. If you change action_magnitude, rescale this by
+        # action_dim*log(new/old) or the temperature autotuner will diverge.
+        target_entropy=-80.0,
         num_qs=2,
         action_magnitude=2.5,
         num_cameras=3,
