@@ -67,6 +67,10 @@ python3 examples/launch_train_piper.py \
 --action_horizon 50 \
 --control_hz 30 \
 --max_timesteps 6000 \
+# noise_mode: 'shift' (gentle, current) or 'tiled' (paper-faithful, clean credit).
+# For 'tiled' consider lowering --action_magnitude (e.g. 1.0) since the action is
+# the noise itself, held constant across the 50-step horizon.
+--noise_mode shift \
 --bc_rollout_episodes 5 \
 --bootstrap_shift_std 0.3 \
 --steer_noise_clip 0.5 \

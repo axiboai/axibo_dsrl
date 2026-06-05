@@ -73,26 +73,34 @@ def get_pi05_input(obs, instruction):
     }
 
 
-def make_steered_noise(rng_key, shift, action_horizon, action_dim=32, *, clip=None):
-    """Steer pi0.5's flow noise with a per-chunk shift.
+def build_noise(mode, rng_key, vec, action_horizon, action_dim=32, *, clip=None):
+    """Build the ``(1, action_horizon, action_dim)`` flow noise to send to pi0.5.
 
-    pi0.5 expects the initial flow-matching noise to be *independent* standard
-    normal per horizon step, shape ``(1, action_horizon, action_dim)``.  We draw
-    a fresh independent base ``N(0, 1)`` each query and add a single broadcast
-    ``shift`` (the SAC action) on top.  Bootstrap uses a random shift; SAC uses a
-    learned one.  This keeps the noise in-distribution (no tiling/constant-drift)
-    while the stored action (the shift) is exactly what was applied.
+    Returns ``(noise, stored_vec)`` where ``noise`` is sent to the policy server
+    and ``stored_vec`` (32-D) is the SAC action recorded in the replay buffer.
 
-    Returns ``(noise, shift)`` where ``noise`` is sent to the policy server and
-    ``shift`` (clipped) is stored in the replay buffer as the SAC action.
+    mode='tiled' (paper-faithful):
+        The 32-D ``vec`` IS the noise, repeated across every horizon step.  The
+        SAC action fully determines the diffusion output (clean credit
+        assignment), matching the original DSRL real/sim code.
+
+    mode='shift':
+        ``vec`` is a mean shift added on top of fresh independent ``N(0, 1)``
+        base noise per step.  In-distribution and gentle, but SAC only controls
+        the mean, so credit assignment is noisier.
     """
-    base = np.asarray(
-        jax.random.normal(rng_key, (1, action_horizon, action_dim)), dtype=np.float32)
-    shift = np.asarray(shift, dtype=np.float32).reshape(action_dim)
+    vec = np.asarray(vec, dtype=np.float32).reshape(action_dim)
     if clip is not None:
-        shift = np.clip(shift, -clip, clip)
-    noise = base + shift[None, None, :]
-    return noise, shift
+        vec = np.clip(vec, -clip, clip)
+    if mode == 'tiled':
+        noise = np.repeat(vec[None, None, :], action_horizon, axis=1)
+    elif mode == 'shift':
+        base = np.asarray(
+            jax.random.normal(rng_key, (1, action_horizon, action_dim)), dtype=np.float32)
+        noise = base + vec[None, None, :]
+    else:
+        raise ValueError(f"unknown noise_mode: {mode!r} (expected 'tiled' or 'shift')")
+    return noise, vec
 
 
 def infer_pi05_actions(agent_dp, request_data, *, noise=None):
@@ -315,35 +323,42 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
                 }
 
                 use_bc_infer = traj_id < variant.bc_rollout_episodes
+                noise_mode = variant.noise_mode
 
                 if use_bc_infer:
-                    # Bootstrap: SMALL random shift over independent base noise.
-                    # A tiny std keeps behaviour close to base BC while giving the
-                    # SAC critic action diversity to learn Q(s, shift) -- a zero
-                    # (or no-noise) bootstrap leaves the critic flat in the action
-                    # dimension, so the actor later extrapolates to the boundary
-                    # and the arms fling off.  Stored shift == applied shift.
-                    rng, shift_key = jax.random.split(rng)
-                    shift = variant.bootstrap_shift_std * np.asarray(
-                        jax.random.normal(shift_key, agent.action_chunk_shape),
-                        dtype=np.float32)
+                    # Bootstrap with a random action so the SAC critic gets
+                    # diversity to learn Q(s, a) (a flat bootstrap makes the actor
+                    # extrapolate to the boundary -> arms fling off).  Stored
+                    # action == applied action either way.
+                    rng, vkey = jax.random.split(rng)
+                    if noise_mode == 'tiled':
+                        # Paper-faithful: standard-normal 32-D, tiled (in-dist scale).
+                        vec = np.asarray(
+                            jax.random.normal(vkey, agent.action_chunk_shape),
+                            dtype=np.float32)
+                    else:
+                        # Shift: small random mean shift to stay near base BC.
+                        vec = variant.bootstrap_shift_std * np.asarray(
+                            jax.random.normal(vkey, agent.action_chunk_shape),
+                            dtype=np.float32)
                     if t == 0:
-                        print(f"BC bootstrap: small random shift "
-                              f"(std={variant.bootstrap_shift_std}).", flush=True)
+                        print(f"BC bootstrap ({noise_mode}).", flush=True)
                 else:
-                    # SAC predicts a steering shift added to fresh independent
-                    # base noise (in-distribution for pi0.5).
                     if t == 0:
-                        print("Querying SAC for steered noise...", flush=True)
-                    shift = np.reshape(
+                        print(f"Querying SAC for steered noise ({noise_mode})...",
+                              flush=True)
+                    vec = np.reshape(
                         agent.sample_actions(obs_dict), agent.action_chunk_shape)
 
-                noise, shift_applied = make_steered_noise(
-                    key, shift, action_horizon, clip=variant.steer_noise_clip)
-                actions_noise = shift_applied.reshape(agent.action_chunk_shape)
+                # Clip only applies to the shift mode (tiled noise IS the action,
+                # already bounded by the actor's tanh +/- action_magnitude).
+                clip = variant.steer_noise_clip if noise_mode == 'shift' else None
+                noise, vec_stored = build_noise(
+                    noise_mode, key, vec, action_horizon, clip=clip)
+                actions_noise = vec_stored.reshape(agent.action_chunk_shape)
                 if t == 0:
                     print(f"  noise stats: min={noise.min():.2f} max={noise.max():.2f} "
-                          f"mean={noise.mean():.2f} | shift |max|={np.abs(actions_noise).max():.2f}",
+                          f"mean={noise.mean():.2f} | action |max|={np.abs(actions_noise).max():.2f}",
                           flush=True)
                 action = infer_pi05_actions(agent_dp, request_data, noise=noise)
 

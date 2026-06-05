@@ -25,8 +25,10 @@ if __name__ == '__main__':
     parser.add_argument('--add_states', default=1, help='whether to add low-dim states to the observations', type=int)
     parser.add_argument('--wandb_project', default='dsrl_piperx', help='wandb project')
     parser.add_argument('--num_initial_traj_collect', default=1, help='number of trajectories to collect before starting online updates', type=int)
+    parser.add_argument('--noise_mode', default='shift', choices=['tiled', 'shift'],
+                        help="how SAC's 32-D action becomes pi0.5 noise: 'tiled' (paper-faithful, action IS the noise, clean credit) or 'shift' (action biases fresh per-step N(0,1), gentler)")
     parser.add_argument('--bc_rollout_episodes', default=5,
-                        help='episodes of small-random-shift bootstrap before SAC steers the shift', type=int)
+                        help='episodes of random-action bootstrap before SAC steers', type=int)
     parser.add_argument('--bootstrap_shift_std', default=0.3,
                         help='std of the random shift during bootstrap (gives SAC action diversity; keep small to stay near BC)', type=float)
     parser.add_argument('--steer_noise_clip', default=0.5,
