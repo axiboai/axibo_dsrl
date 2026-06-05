@@ -290,6 +290,10 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
     image_list = []
     is_success = False
     action = None
+    # BC bootstrap vs SAC-steered: the metric that shows DSRL beating BC is
+    # steps-to-success (shorter successful episode == higher return).
+    episode_is_steered = traj_id >= variant.bc_rollout_episodes
+    n_env_steps = 0
 
     old_settings = termios.tcgetattr(sys.stdin)
     try:
@@ -372,6 +376,7 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
             action_t = np.asarray(action[t % query_frequency], dtype=np.float32).reshape(-1)
             try:
                 env.step(action_t)
+                n_env_steps += 1
             except Exception:
                 print("Environment step failed")
                 import traceback
@@ -430,9 +435,31 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
             rewards = -np.ones(query_steps)
             masks = np.ones(query_steps)
 
+        episode_return = float(np.sum(rewards))
+        time_to_fold_s = n_env_steps / float(variant.control_hz)
+        phase = "STEERED" if episode_is_steered else "BC"
+        print(
+            f"[episode {traj_id} | {phase}] success={int(is_success)} "
+            f"query_steps={query_steps} env_steps={n_env_steps} "
+            f"(~{time_to_fold_s:.1f}s) return={episode_return:.1f}",
+            flush=True)
+
         if wandb_logger is not None:
             wandb_logger.log({'is_success': int(is_success)}, step=i)
             wandb_logger.log({'total_num_traj': traj_id}, step=i)
+            # Efficiency metrics: with the shortest-path reward, fewer steps to a
+            # successful fold == better. Split BC vs steered so you can see whether
+            # DSRL beats the base policy. Suffix keeps the two series separate.
+            suffix = 'steered' if episode_is_steered else 'bc'
+            wandb_logger.log({
+                f'episode/query_steps_{suffix}': query_steps,
+                f'episode/env_steps_{suffix}': n_env_steps,
+                f'episode/return_{suffix}': episode_return,
+                'episode/is_steered': int(episode_is_steered),
+            }, step=i)
+            if is_success:
+                wandb_logger.log(
+                    {f'episode/steps_to_success_{suffix}': query_steps}, step=i)
 
         print("Episode finished — moving to reset pose.", flush=True)
         try:
