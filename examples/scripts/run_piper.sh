@@ -46,9 +46,9 @@ export remote_port="8000"
 
 # Horizon note: max_timesteps=6000 (~200 s @ 30 Hz) is just a SAFETY CEILING --
 # press 'q' to end an episode the moment the fold is done. Typical q-ended folds
-# are ~100 s (~60 SAC transitions @ query_freq=50). The Bellman backup uses
-# discount^query_freq per transition, so discount=0.9995 keeps the sparse
-# success signal propagating across the episode (0.99 would vanish).
+# Typical q-ended folds are ~100 s (~120 SAC transitions @ query_freq=25).
+# Re-infer every 25 steps (half the 50-step chunk) to match openpi_inference /
+# ActionChunkBroker. The Bellman backup uses discount^query_freq per transition.
 python3 examples/launch_train_piper.py \
 --algorithm pixel_sac \
 --env piperx \
@@ -63,7 +63,7 @@ python3 examples/launch_train_piper.py \
 --multi_grad_step 30 \
 --resize_image 128 \
 --action_magnitude 2.5 \
---query_freq 50 \
+--query_freq 25 \
 --action_horizon 50 \
 --control_hz 30 \
 --max_timesteps 6000 \

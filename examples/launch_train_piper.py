@@ -34,7 +34,8 @@ if __name__ == '__main__':
     parser.add_argument('--suffix', default='', help='suffix to use for wandb')
     parser.add_argument('--multi_grad_step', default=1, help='Number of gradient steps per environment step, aka UTD', type=int)
     parser.add_argument('--resize_image', default=128, help='the size of image for the SAC encoder', type=int)
-    parser.add_argument('--query_freq', default=50, help='steps executed per policy query (<= action_horizon)', type=int)
+    parser.add_argument('--query_freq', default=25,
+                        help='control steps per policy query (open-loop chunk consume; <= action_horizon)', type=int)
     parser.add_argument('--action_horizon', default=50, help='pi0.5 action horizon / noise length', type=int)
     parser.add_argument('--control_hz', default=30, help='robot control loop rate (Hz)', type=int)
     parser.add_argument('--max_timesteps', default=300, help='max timesteps per episode', type=int)

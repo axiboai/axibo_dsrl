@@ -78,7 +78,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--episodes', default=1, type=int)
     parser.add_argument('--max_timesteps', default=200, type=int)
-    parser.add_argument('--query_freq', default=50, type=int)
+    parser.add_argument('--query_freq', default=25, type=int)
     parser.add_argument('--action_horizon', default=50, type=int)
     parser.add_argument('--control_hz', default=30, type=int)
     parser.add_argument('--instruction', default='pick towel from pile, fold and stack')
