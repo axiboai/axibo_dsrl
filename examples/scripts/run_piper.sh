@@ -48,11 +48,10 @@ export remote_port="8000"
 # press 'q' to end an episode the moment the fold is done. Typical q-ended folds
 # are ~100 s (~120 SAC transitions @ query_freq=25). Re-infer every 25 steps to
 # match openpi_inference / ActionChunkBroker; discount^query_freq per transition.
-# noise_mode: 'tiled' (paper-faithful -- SAC action IS the noise, tiled across the
-#   50-step horizon, clean credit assignment) or 'shift' (action biases fresh
-#   per-step N(0,1); gentler but noisier credit).
-# action_magnitude 1.0 keeps the tiled noise near N(0,1) scale. The paper used 2.5
-#   at horizon 10; over horizon 50 a constant push that large is too strong.
+# noise_mode: USE 'shift'. This pi0.5 (horizon 50) was trained on INDEPENDENT
+#   per-step noise, so 'tiled' (constant noise across the horizon, paper-style)
+#   is out-of-distribution and makes the arms spaz -- confirmed on-robot.
+#   'shift' adds the SAC action on top of fresh per-step N(0,1) (in-distribution).
 # Note: action_horizon=50 (noise length the policy expects) is separate from
 #   query_freq=25 (steps consumed before re-querying -- matches openpi_inference).
 python3 examples/launch_train_piper.py \
@@ -68,12 +67,12 @@ python3 examples/launch_train_piper.py \
 --log_interval 100 \
 --multi_grad_step 30 \
 --resize_image 128 \
---action_magnitude 1.0 \
+--action_magnitude 2.5 \
 --query_freq 25 \
 --action_horizon 50 \
 --control_hz 30 \
 --max_timesteps 6000 \
---noise_mode tiled \
+--noise_mode shift \
 --bc_rollout_episodes 5 \
 --bootstrap_shift_std 0.3 \
 --steer_noise_clip 0.5 \
