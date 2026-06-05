@@ -317,15 +317,19 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
                 use_bc_infer = traj_id < variant.bc_rollout_episodes
 
                 if use_bc_infer:
-                    # Bootstrap: pure BC -- identical to openpi_inference and the
-                    # smoke test (server samples its own standard-normal noise, we
-                    # send NO noise). The applied steering shift is exactly zero, so
-                    # the stored action is a valid, causally-consistent label.
+                    # Bootstrap: SMALL random shift over independent base noise.
+                    # A tiny std keeps behaviour close to base BC while giving the
+                    # SAC critic action diversity to learn Q(s, shift) -- a zero
+                    # (or no-noise) bootstrap leaves the critic flat in the action
+                    # dimension, so the actor later extrapolates to the boundary
+                    # and the arms fling off.  Stored shift == applied shift.
+                    rng, shift_key = jax.random.split(rng)
+                    shift = variant.bootstrap_shift_std * np.asarray(
+                        jax.random.normal(shift_key, agent.action_chunk_shape),
+                        dtype=np.float32)
                     if t == 0:
-                        print("BC bootstrap: pure base inference (no noise sent).",
-                              flush=True)
-                    actions_noise = np.zeros(agent.action_chunk_shape, dtype=np.float32)
-                    action = infer_pi05_actions(agent_dp, request_data)
+                        print(f"BC bootstrap: small random shift "
+                              f"(std={variant.bootstrap_shift_std}).", flush=True)
                 else:
                     # SAC predicts a steering shift added to fresh independent
                     # base noise (in-distribution for pi0.5).
@@ -333,14 +337,15 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None,
                         print("Querying SAC for steered noise...", flush=True)
                     shift = np.reshape(
                         agent.sample_actions(obs_dict), agent.action_chunk_shape)
-                    noise, shift_applied = make_steered_noise(
-                        key, shift, action_horizon, clip=variant.steer_noise_clip)
-                    actions_noise = shift_applied.reshape(agent.action_chunk_shape)
-                    if t == 0:
-                        print(f"  noise stats: min={noise.min():.2f} max={noise.max():.2f} "
-                              f"mean={noise.mean():.2f} | shift |max|={np.abs(actions_noise).max():.2f}",
-                              flush=True)
-                    action = infer_pi05_actions(agent_dp, request_data, noise=noise)
+
+                noise, shift_applied = make_steered_noise(
+                    key, shift, action_horizon, clip=variant.steer_noise_clip)
+                actions_noise = shift_applied.reshape(agent.action_chunk_shape)
+                if t == 0:
+                    print(f"  noise stats: min={noise.min():.2f} max={noise.max():.2f} "
+                          f"mean={noise.mean():.2f} | shift |max|={np.abs(actions_noise).max():.2f}",
+                          flush=True)
+                action = infer_pi05_actions(agent_dp, request_data, noise=noise)
 
                 if t == 0:
                     print(f"action chunk shape from server: {action.shape}")
