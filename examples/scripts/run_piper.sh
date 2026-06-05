@@ -67,15 +67,15 @@ python3 examples/launch_train_piper.py \
 --log_interval 100 \
 --multi_grad_step 30 \
 --resize_image 128 \
---action_magnitude 2.5 \
+--action_magnitude 0.2 \
 --query_freq 25 \
 --action_horizon 50 \
 --control_hz 30 \
 --max_timesteps 6000 \
 --noise_mode shift \
 --bc_rollout_episodes 12 \
---bootstrap_shift_std 0.3 \
---steer_noise_clip 0.5 \
+--bootstrap_shift_std 0.2 \
+--steer_noise_clip 0.2 \
 --hidden_dims 1024 \
 --num_qs 2 \
 --instruction "pick towel from pile, fold and stack"
