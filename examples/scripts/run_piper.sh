@@ -73,7 +73,7 @@ python3 examples/launch_train_piper.py \
 --control_hz 30 \
 --max_timesteps 6000 \
 --noise_mode shift \
---bc_rollout_episodes 12 \
+--bc_rollout_episodes 8 \
 --bootstrap_shift_std 0.2 \
 --steer_noise_clip 0.2 \
 --hidden_dims 1024 \
